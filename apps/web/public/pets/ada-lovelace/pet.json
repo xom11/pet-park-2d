@@ -1,0 +1,7 @@
+{
+  "id": "ada-lovelace",
+  "displayName": "Ada Lovelace",
+  "description": "A tiny Codex-style Ada Lovelace pet with calm analytical charm.",
+  "spritesheetPath": "spritesheet.webp",
+  "kind": "object"
+}

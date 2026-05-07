@@ -1,0 +1,7 @@
+{
+  "id": "lol-poro",
+  "displayName": "Poro",
+  "description": "A tiny League of Legends Poro-inspired fluffy desktop pet.",
+  "spritesheetPath": "spritesheet.webp",
+  "kind": "animal"
+}

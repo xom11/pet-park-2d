@@ -1,0 +1,21 @@
+{
+  "name": "pet-park-2d",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.0.8",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter \"@pet-park-2d/web\" --filter \"@pet-park-2d/server\" dev",
+    "dev:web": "pnpm --filter @pet-park-2d/web dev",
+    "dev:server": "pnpm --filter @pet-park-2d/server dev",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm --filter @pet-park-2d/web build",
+    "sync:pets": "tsx scripts/sync-pets.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

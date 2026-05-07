@@ -1,0 +1,12 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Inherited from pet-park 3D: Colyseus pulls @colyseus/uwebsockets-transport
+# which fetches uWebSockets.js from a git repo. We use @colyseus/ws-transport
+# instead, but transitive resolution still has to succeed.
+blockExoticSubdeps: false
+
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true

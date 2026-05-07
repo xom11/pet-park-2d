@@ -1,0 +1,176 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+html,
+body {
+  /* Stop iOS rubber-band scroll, pull-to-refresh, double-tap zoom on the game
+     surface so touch input is fully ours. */
+  overscroll-behavior: none;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body {
+  background: #3d7a40;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  color: #e6e9f2;
+}
+
+canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+
+.hud {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  font-size: 13px;
+  pointer-events: none;
+  z-index: 10;
+  backdrop-filter: blur(6px);
+  /* Don't let the HUD bleed into the player-count chip when the viewport is
+     narrow — leave 110px of room for it on the right. */
+  max-width: calc(100vw - 110px);
+}
+
+.hud strong {
+  color: #fff8;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.player-count {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 11;
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .hud {
+    font-size: 11px;
+    padding: 6px 9px;
+  }
+  .player-count {
+    font-size: 11px;
+    padding: 5px 8px;
+  }
+}
+
+.player-count .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6cf08e;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.player-count.disconnected .dot {
+  background: #f06c6c;
+}
+
+.mobile-controls {
+  display: none;
+}
+.hud-mobile-only {
+  display: none;
+}
+.hud-desktop-only {
+  display: inline;
+}
+
+@media (pointer: coarse) {
+  .mobile-controls {
+    display: block;
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 20;
+  }
+  .hud-desktop-only {
+    display: none;
+  }
+  .hud-mobile-only {
+    display: inline;
+  }
+}
+
+.mobile-joystick-zone {
+  position: absolute;
+  left: 24px;
+  bottom: 28px;
+  width: 140px;
+  height: 140px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.mobile-jump-button {
+  position: absolute;
+  right: 28px;
+  bottom: 36px;
+  width: 86px;
+  height: 86px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: transform 80ms ease, background 80ms ease;
+}
+.mobile-jump-button:active {
+  transform: scale(0.94);
+  background: rgba(255, 255, 255, 0.32);
+}
