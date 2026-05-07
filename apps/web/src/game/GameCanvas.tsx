@@ -57,6 +57,7 @@ type LocalState = {
   // (front-facing); flipping is the cheapest way to give the player a sense
   // of facing without adding more sheet rows.
   facing: Facing;
+  isMoving: boolean;
 };
 
 type RenderEntry = {
@@ -67,6 +68,10 @@ type RenderEntry = {
   frame: number;
   frameTimer: number;
   facing: Facing;
+  // Derived from snap-vs-rx delta each frame. We need this independent of
+  // snap.anim because snap.anim === "jump" doesn't tell us whether the remote
+  // is also moving — and the visual row depends on that distinction.
+  isMoving: boolean;
 };
 
 function buildGrassPattern(): HTMLCanvasElement {
@@ -124,6 +129,7 @@ export function GameCanvas() {
       bounceTimer: 0,
       pendingJumpToSend: false,
       facing: 1,
+      isMoving: false,
     };
 
     const remoteRender = new Map<string, RenderEntry>();
@@ -220,6 +226,10 @@ export function GameCanvas() {
         name: string;
         isLocal: boolean;
         facing: Facing;
+        // Whether the pet is in horizontal motion this frame. Decoupled from
+        // anim because a "jump" anim with no motion should render the idle
+        // pose + bounce, while a "jump" anim with motion uses the walk pose.
+        isMoving: boolean;
       };
 
       const drawables: Drawable[] = [];
@@ -241,6 +251,7 @@ export function GameCanvas() {
             name: snap.name,
             isLocal: true,
             facing: local.facing,
+            isMoving: local.isMoving,
           });
         } else {
           const r = remoteRender.get(snap.sessionId);
@@ -259,6 +270,7 @@ export function GameCanvas() {
             name: snap.name,
             isLocal: false,
             facing: r ? r.facing : 1,
+            isMoving: r ? r.isMoving : false,
           });
         }
       }
@@ -289,6 +301,7 @@ export function GameCanvas() {
         bounceY: number;
         isLocal: boolean;
         facing: Facing;
+        isMoving: boolean;
       },
       screenX: number,
       screenY: number,
@@ -327,25 +340,41 @@ export function GameCanvas() {
       ctx.restore();
 
       if (img) {
-        // Idle locks to frame 0 because some Codex sheets have empty frames in
-        // the idle row that briefly hide the pet ("flicker"). Walk and jump
-        // tick through all 8 frames so the cycle reads as motion. Remote
-        // players use a per-entry timer initialized on first sight so two
-        // pets on the same anim aren't lockstep.
+        // Pick which sheet row to render. We deliberately do NOT use
+        // animMap.jump (row 2) — some Codex sheets (e.g. bubble-pao-pao) draw
+        // row 2 facing the opposite direction from row 1, so flipping to it
+        // mid-walk reads as the pet "turning around" during the jump. The
+        // bounce y-offset already conveys "in the air"; we just keep the
+        // walk pose if the pet is moving, or the idle pose if it's standing
+        // still and only the bounce conveys jump.
+        const rowAnim: AnimationState =
+          d.anim === "jump" ? (d.isMoving ? "walk" : "idle") : d.anim;
+        // Idle locks to frame 0 because some Codex sheets have empty frames
+        // in the idle row that briefly hide the pet ("flicker"). Walk ticks
+        // through all 8 frames so the cycle reads as motion. Remote players
+        // use a per-entry timer initialized on first sight so two pets on
+        // the same anim aren't lockstep.
         let frame: number;
-        if (d.anim === "idle") {
+        if (rowAnim === "idle") {
           frame = 0;
         } else if (d.isLocal) {
           frame = local.frame;
         } else {
           let r = remoteRender.get(d.sessionId);
           if (!r) {
-            r = { rx: 0, ry: 0, frame: 0, frameTimer: 0, facing: 1 };
+            r = {
+              rx: 0,
+              ry: 0,
+              frame: 0,
+              frameTimer: 0,
+              facing: 1,
+              isMoving: false,
+            };
             remoteRender.set(d.sessionId, r);
           }
           frame = r.frame;
         }
-        const row = asset.animMap[d.anim] ?? 0;
+        const row = asset.animMap[rowAnim] ?? 0;
         const sx = frame * asset.cellWidth;
         const sy = row * asset.cellHeight;
         const dx = Math.round(screenX - dw / 2);
@@ -458,6 +487,7 @@ export function GameCanvas() {
         inY /= inMag;
       }
       const isMoving = Math.hypot(inX, inY) > 0.05;
+      local.isMoving = isMoving;
       const jumpRequested = jumpKey || mobileJump;
 
       // Local prediction (matches server tick)
@@ -486,10 +516,12 @@ export function GameCanvas() {
 
       // Frame ticking — only when actually animating. Idle locks to frame 0
       // (drawPet enforces this) so we don't sweep through frames that may be
-      // empty in the sheet. Reset timer when entering idle so the next walk
-      // starts from frame 0.
+      // empty in the sheet. "Jump while standing still" also locks because
+      // drawPet renders it from the idle row.
       const framePeriod = 1 / FRAME_FPS;
-      if (local.anim === "idle") {
+      const localTickFrames =
+        local.anim === "walk" || (local.anim === "jump" && local.isMoving);
+      if (!localTickFrames) {
         local.frame = 0;
         local.frameTimer = 0;
       } else {
@@ -511,19 +543,25 @@ export function GameCanvas() {
             frame: 0,
             frameTimer: 0,
             facing: 1,
+            isMoving: false,
           };
           remoteRender.set(snap.sessionId, r);
         }
-        // Derive facing from x-delta. The delta is per network update which
-        // arrives at TICK_RATE Hz; small jitter floor avoids flipping facing
-        // on idle micro-corrections.
+        // Derive facing + motion from snap-vs-render delta. Delta is non-zero
+        // whenever the server has more recent position than what we've
+        // smoothed to; when the remote stops, the lerp catches up and delta
+        // collapses to ~0. Threshold avoids flipping facing on rest jitter.
         const dx = snap.x - r.rx;
+        const dy = snap.y - r.ry;
         if (dx > 0.02) r.facing = 1;
         else if (dx < -0.02) r.facing = -1;
+        r.isMoving = Math.hypot(dx, dy) > 0.1;
         const k = 1 - Math.exp(-REMOTE_LERP_RATE * dt);
         r.rx += (snap.x - r.rx) * k;
         r.ry += (snap.y - r.ry) * k;
-        if (snap.anim === "idle") {
+        const remoteTickFrames =
+          snap.anim === "walk" || (snap.anim === "jump" && r.isMoving);
+        if (!remoteTickFrames) {
           r.frame = 0;
           r.frameTimer = 0;
         } else {
