@@ -17,7 +17,7 @@ export function MobileControls() {
       zone: zoneRef.current,
       mode: "static",
       position: { left: "50%", top: "50%" },
-      size: 110,
+      size: 80,
       color: "#e6e9f2",
       restOpacity: 0.55,
       threshold: 0.05,

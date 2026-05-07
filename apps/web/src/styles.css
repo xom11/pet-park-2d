@@ -142,25 +142,25 @@ kbd {
 
 .mobile-joystick-zone {
   position: absolute;
-  left: 24px;
-  bottom: 28px;
-  width: 140px;
-  height: 140px;
+  left: 18px;
+  bottom: 22px;
+  width: 100px;
+  height: 100px;
   pointer-events: auto;
   touch-action: none;
 }
 
 .mobile-jump-button {
   position: absolute;
-  right: 28px;
-  bottom: 36px;
-  width: 86px;
-  height: 86px;
+  right: 22px;
+  bottom: 28px;
+  width: 64px;
+  height: 64px;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.55);
   background: rgba(255, 255, 255, 0.18);
   color: #fff;
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.5px;
   pointer-events: auto;

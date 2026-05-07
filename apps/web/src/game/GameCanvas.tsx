@@ -41,6 +41,8 @@ const REMOTE_LERP_RATE = 12;
 // once at startup.
 const TILE_SIZE = 64;
 
+type Facing = 1 | -1;
+
 type LocalState = {
   x: number;
   y: number;
@@ -50,6 +52,11 @@ type LocalState = {
   frameTimer: number;
   bounceTimer: number;
   pendingJumpToSend: boolean;
+  // +1 sprite drawn as-is (faces "right"), -1 mirrored horizontally so the
+  // character reads as "facing left". Codex Pet sheets are single-direction
+  // (front-facing); flipping is the cheapest way to give the player a sense
+  // of facing without adding more sheet rows.
+  facing: Facing;
 };
 
 type RenderEntry = {
@@ -59,6 +66,7 @@ type RenderEntry = {
   // Per-pet animation phase so two players on the same anim aren't lockstep.
   frame: number;
   frameTimer: number;
+  facing: Facing;
 };
 
 function buildGrassPattern(): HTMLCanvasElement {
@@ -115,6 +123,7 @@ export function GameCanvas() {
       frameTimer: 0,
       bounceTimer: 0,
       pendingJumpToSend: false,
+      facing: 1,
     };
 
     const remoteRender = new Map<string, RenderEntry>();
@@ -210,6 +219,7 @@ export function GameCanvas() {
         petId: string;
         name: string;
         isLocal: boolean;
+        facing: Facing;
       };
 
       const drawables: Drawable[] = [];
@@ -230,6 +240,7 @@ export function GameCanvas() {
             petId: snap.petId,
             name: snap.name,
             isLocal: true,
+            facing: local.facing,
           });
         } else {
           const r = remoteRender.get(snap.sessionId);
@@ -247,6 +258,7 @@ export function GameCanvas() {
             petId: snap.petId,
             name: snap.name,
             isLocal: false,
+            facing: r ? r.facing : 1,
           });
         }
       }
@@ -255,10 +267,15 @@ export function GameCanvas() {
       // the standard 2.5D depth trick. With +Y down, larger Y is "in front".
       drawables.sort((a, b) => a.worldY - b.worldY);
 
+      // Sprites occupy ~40% of viewport width on a phone at the desktop scale —
+      // shrink them so multiple pets fit on screen and the player sees more
+      // of the world. Threshold 480 px matches the @media breakpoint in CSS.
+      const petScaleMul = width < 480 ? 0.65 : 1;
+
       for (const d of drawables) {
         const screenX = (d.worldX - camX) * WORLD_SCALE + halfW;
         const screenY = (d.worldY - camY) * WORLD_SCALE + halfH;
-        drawPet(ctx, d, screenX, screenY, remoteRender);
+        drawPet(ctx, d, screenX, screenY, remoteRender, petScaleMul);
       }
     };
 
@@ -271,10 +288,12 @@ export function GameCanvas() {
         name: string;
         bounceY: number;
         isLocal: boolean;
+        facing: Facing;
       },
       screenX: number,
       screenY: number,
       remoteRender: Map<string, RenderEntry>,
+      petScaleMul: number,
     ) => {
       const asset = getPetAsset(d.petId);
       let img = getSprite(asset.spritesheetUrl);
@@ -285,6 +304,10 @@ export function GameCanvas() {
         loadSprite(asset.spritesheetUrl).catch(() => {});
       }
 
+      const drawScale = asset.drawScale * petScaleMul;
+      const dw = asset.cellWidth * drawScale;
+      const dh = asset.cellHeight * drawScale;
+
       // Drop shadow sits at the world position, ignoring bounce — that's what
       // sells the bounce as a vertical offset rather than the pet floating
       // off the floor.
@@ -294,8 +317,8 @@ export function GameCanvas() {
       ctx.ellipse(
         screenX,
         screenY,
-        asset.cellWidth * asset.drawScale * 0.28,
-        asset.cellWidth * asset.drawScale * 0.1,
+        asset.cellWidth * drawScale * 0.28,
+        asset.cellWidth * drawScale * 0.1,
         0,
         0,
         Math.PI * 2,
@@ -303,19 +326,21 @@ export function GameCanvas() {
       ctx.fill();
       ctx.restore();
 
-      const dw = asset.cellWidth * asset.drawScale;
-      const dh = asset.cellHeight * asset.drawScale;
-
       if (img) {
-        // Pick frame: local player ticks its own; remote players use the
-        // shared per-entry timer initialized on first sight.
+        // Idle locks to frame 0 because some Codex sheets have empty frames in
+        // the idle row that briefly hide the pet ("flicker"). Walk and jump
+        // tick through all 8 frames so the cycle reads as motion. Remote
+        // players use a per-entry timer initialized on first sight so two
+        // pets on the same anim aren't lockstep.
         let frame: number;
-        if (d.isLocal) {
+        if (d.anim === "idle") {
+          frame = 0;
+        } else if (d.isLocal) {
           frame = local.frame;
         } else {
           let r = remoteRender.get(d.sessionId);
           if (!r) {
-            r = { rx: 0, ry: 0, frame: 0, frameTimer: 0 };
+            r = { rx: 0, ry: 0, frame: 0, frameTimer: 0, facing: 1 };
             remoteRender.set(d.sessionId, r);
           }
           frame = r.frame;
@@ -323,17 +348,40 @@ export function GameCanvas() {
         const row = asset.animMap[d.anim] ?? 0;
         const sx = frame * asset.cellWidth;
         const sy = row * asset.cellHeight;
-        ctx.drawImage(
-          img,
-          sx,
-          sy,
-          asset.cellWidth,
-          asset.cellHeight,
-          Math.round(screenX - dw / 2),
-          Math.round(screenY - dh + d.bounceY * -1),
-          dw,
-          dh,
-        );
+        const dx = Math.round(screenX - dw / 2);
+        const dy = Math.round(screenY - dh + d.bounceY * -1);
+        if (d.facing === -1) {
+          // Mirror horizontally around the sprite's vertical centerline. This
+          // is a cheap "facing left" since Codex Pet sheets are single-direction.
+          // Side effect: any text/asymmetric detail in the sprite mirrors too.
+          ctx.save();
+          ctx.translate(dx + dw / 2, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(
+            img,
+            sx,
+            sy,
+            asset.cellWidth,
+            asset.cellHeight,
+            -dw / 2,
+            dy,
+            dw,
+            dh,
+          );
+          ctx.restore();
+        } else {
+          ctx.drawImage(
+            img,
+            sx,
+            sy,
+            asset.cellWidth,
+            asset.cellHeight,
+            dx,
+            dy,
+            dw,
+            dh,
+          );
+        }
       } else {
         // Sprite still loading — placeholder so the pet shows up immediately.
         ctx.save();
@@ -429,29 +477,61 @@ export function GameCanvas() {
       local.anim =
         local.bounceTimer > 0 ? "jump" : isMoving ? "walk" : "idle";
 
-      // Frame ticking for the local pet.
-      local.frameTimer += dt;
+      // Update facing only on horizontal input — vertical-only motion (W/S
+      // alone) keeps the previous facing so the sprite doesn't snap back to
+      // the default each time you walk down. Threshold avoids jitter on
+      // analog joysticks at rest.
+      if (inX > 0.1) local.facing = 1;
+      else if (inX < -0.1) local.facing = -1;
+
+      // Frame ticking — only when actually animating. Idle locks to frame 0
+      // (drawPet enforces this) so we don't sweep through frames that may be
+      // empty in the sheet. Reset timer when entering idle so the next walk
+      // starts from frame 0.
       const framePeriod = 1 / FRAME_FPS;
-      while (local.frameTimer >= framePeriod) {
-        local.frameTimer -= framePeriod;
-        local.frame = (local.frame + 1) % FRAMES_PER_ROW;
+      if (local.anim === "idle") {
+        local.frame = 0;
+        local.frameTimer = 0;
+      } else {
+        local.frameTimer += dt;
+        while (local.frameTimer >= framePeriod) {
+          local.frameTimer -= framePeriod;
+          local.frame = (local.frame + 1) % FRAMES_PER_ROW;
+        }
       }
 
-      // Frame ticking + lerp for remote pets.
+      // Frame ticking + lerp + facing for remote pets.
       for (const snap of getAllSnapshots()) {
         if (snap.sessionId === sid) continue;
         let r = remoteRender.get(snap.sessionId);
         if (!r) {
-          r = { rx: snap.x, ry: snap.y, frame: 0, frameTimer: 0 };
+          r = {
+            rx: snap.x,
+            ry: snap.y,
+            frame: 0,
+            frameTimer: 0,
+            facing: 1,
+          };
           remoteRender.set(snap.sessionId, r);
         }
+        // Derive facing from x-delta. The delta is per network update which
+        // arrives at TICK_RATE Hz; small jitter floor avoids flipping facing
+        // on idle micro-corrections.
+        const dx = snap.x - r.rx;
+        if (dx > 0.02) r.facing = 1;
+        else if (dx < -0.02) r.facing = -1;
         const k = 1 - Math.exp(-REMOTE_LERP_RATE * dt);
         r.rx += (snap.x - r.rx) * k;
         r.ry += (snap.y - r.ry) * k;
-        r.frameTimer += dt;
-        while (r.frameTimer >= framePeriod) {
-          r.frameTimer -= framePeriod;
-          r.frame = (r.frame + 1) % FRAMES_PER_ROW;
+        if (snap.anim === "idle") {
+          r.frame = 0;
+          r.frameTimer = 0;
+        } else {
+          r.frameTimer += dt;
+          while (r.frameTimer >= framePeriod) {
+            r.frameTimer -= framePeriod;
+            r.frame = (r.frame + 1) % FRAMES_PER_ROW;
+          }
         }
       }
       // Garbage collect render entries for sessions that have left.
