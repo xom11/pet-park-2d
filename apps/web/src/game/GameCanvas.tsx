@@ -15,9 +15,15 @@ import { useMobileInputStore } from "../state/mobileInputStore";
 import { getPetAsset } from "../assets/pets";
 import { getSprite, loadSprite } from "./spriteCache";
 
-// Pixels per world unit. World is in unitless coords; the renderer maps to px
-// here. Tweak to zoom in/out without touching physics.
-const WORLD_SCALE = 32;
+// Pixels per world unit at default zoom. World is in unitless coords; the
+// renderer maps to px through `zoom` (a runtime variable initialised to this
+// default). Pinch updates `zoom`; sprite/grass scale relative to default so
+// the zoom feels uniform across the whole scene.
+const DEFAULT_ZOOM = 32;
+const ZOOM_MIN = 14;
+const ZOOM_MAX = 96;
+const clampZoom = (z: number) =>
+  Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
 
 // Sprite frame ticking. 8 frames at 8 fps = 1 s per loop.
 const FRAME_FPS = 8;
@@ -40,6 +46,16 @@ const REMOTE_LERP_RATE = 12;
 // Grass tile size (px). Drawn via createPattern from an offscreen canvas built
 // once at startup.
 const TILE_SIZE = 64;
+
+// Drag-to-pan / pinch-to-zoom camera. One pointer = pan; two pointers =
+// pinch (zoom anchored on midpoint, plus midpoint pan). The offset eases
+// back to 0 while the player is moving and not gesturing — so standing
+// still lets you peek around, and walking re-centers smoothly. Skip
+// selector matches widgets that have their own pointer behavior so they
+// aren't hijacked.
+const CAMERA_DRAG_SKIP_SELECTOR =
+  ".mobile-joystick-zone, .mobile-jump-button, .hud, .player-count";
+const CAMERA_RECENTER_RATE = 3;
 
 type Facing = 1 | -1;
 
@@ -154,6 +170,81 @@ export function GameCanvas() {
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
 
+    // Camera state mutated by the pointer/pinch handlers and read in frame().
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    let zoom = DEFAULT_ZOOM;
+
+    // Active gesture pointers. Mouse button or touch contacts that started on
+    // a non-skip element get tracked here; the pointer count decides between
+    // pan (1) and pinch (2). Pointers that started on the joystick / jump
+    // button / HUD never enter this map, so those widgets work normally.
+    const pointers = new Map<number, { x: number; y: number }>();
+    // Last pinch reference (distance + midpoint). Reset whenever the pointer
+    // count crosses 2, so the next pinch frame establishes a fresh baseline.
+    let pinch: { distance: number; midX: number; midY: number } | null = null;
+
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Element | null;
+      if (target && target.closest && target.closest(CAMERA_DRAG_SKIP_SELECTOR))
+        return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      // Crossing into / out of 2 invalidates the pinch baseline.
+      pinch = null;
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      const p = pointers.get(e.pointerId);
+      if (!p) return;
+
+      if (pointers.size === 1) {
+        // Single-finger / mouse pan. Convert px → world units via current
+        // zoom so a 100 px swipe always covers the same on-screen distance
+        // regardless of zoom level.
+        const dx = e.clientX - p.x;
+        const dy = e.clientY - p.y;
+        dragOffsetX -= dx / zoom;
+        dragOffsetY -= dy / zoom;
+      }
+
+      p.x = e.clientX;
+      p.y = e.clientY;
+
+      if (pointers.size >= 2) {
+        const [a, b] = pointers.values();
+        if (!a || !b) return;
+        const distance = Math.hypot(b.x - a.x, b.y - a.y);
+        const midX = (a.x + b.x) / 2;
+        const midY = (a.y + b.y) / 2;
+        if (pinch && pinch.distance > 0 && distance > 0) {
+          const oldZoom = zoom;
+          zoom = clampZoom(oldZoom * (distance / pinch.distance));
+          // Anchor zoom on the pinch midpoint: keep the world point under
+          // the midpoint stationary on screen by adjusting dragOffset.
+          // World x under (midX, midY) at oldZoom is
+          //   wx = camX + (midX - halfW) / oldZoom
+          // We want it equal to camX_new + (midX - halfW) / zoom, so
+          //   Δoffset = (midX - halfW) * (1/oldZoom - 1/zoom).
+          const halfW = canvas.clientWidth / 2;
+          const halfH = canvas.clientHeight / 2;
+          dragOffsetX += (midX - halfW) * (1 / oldZoom - 1 / zoom);
+          dragOffsetY += (midY - halfH) * (1 / oldZoom - 1 / zoom);
+          // Two-finger pan: midpoint shift translates the camera.
+          dragOffsetX -= (midX - pinch.midX) / zoom;
+          dragOffsetY -= (midY - pinch.midY) / zoom;
+        }
+        pinch = { distance, midX, midY };
+      }
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (!pointers.delete(e.pointerId)) return;
+      pinch = null;
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+
     let dpr = window.devicePixelRatio || 1;
     const resize = () => {
       dpr = window.devicePixelRatio || 1;
@@ -178,20 +269,26 @@ export function GameCanvas() {
       const halfW = width / 2;
       const halfH = height / 2;
 
-      // Background
+      // Background. The grass pattern is anchored in WORLD coordinates: tiles
+      // sit at fixed world spots so panning/zooming feels physical (you see
+      // the same patch of grass from closer/farther rather than the pattern
+      // re-tiling under you).
+      const tileScale = zoom / DEFAULT_ZOOM;
+      const tilePx = TILE_SIZE * tileScale;
       if (grassPattern) {
-        // Translate the pattern so it scrolls with the camera. The translation
-        // must be modulo TILE_SIZE so floats don't drift over time.
         ctx.save();
-        const offX = ((-camX * WORLD_SCALE) % TILE_SIZE + TILE_SIZE) % TILE_SIZE;
-        const offY = ((-camY * WORLD_SCALE) % TILE_SIZE + TILE_SIZE) % TILE_SIZE;
-        ctx.translate(offX - TILE_SIZE, offY - TILE_SIZE);
+        const offX = ((-camX * zoom) % tilePx + tilePx) % tilePx;
+        const offY = ((-camY * zoom) % tilePx + tilePx) % tilePx;
+        // Translate to the first tile origin off-screen, then ctx.scale so the
+        // (TILE_SIZE)-px source pattern tiles at tilePx on screen.
+        ctx.translate(offX - tilePx, offY - tilePx);
+        ctx.scale(tileScale, tileScale);
         ctx.fillStyle = grassPattern;
         ctx.fillRect(
-          -offX,
-          -offY,
-          width + TILE_SIZE * 2,
-          height + TILE_SIZE * 2,
+          -offX / tileScale,
+          -offY / tileScale,
+          (width + tilePx * 2) / tileScale,
+          (height + tilePx * 2) / tileScale,
         );
         ctx.restore();
       } else {
@@ -204,10 +301,10 @@ export function GameCanvas() {
       ctx.save();
       ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
       ctx.lineWidth = 2;
-      const sx = (-12 - camX) * WORLD_SCALE + halfW;
-      const sy = (-12 - camY) * WORLD_SCALE + halfH;
-      const sw = 24 * WORLD_SCALE;
-      const sh = 24 * WORLD_SCALE;
+      const sx = (-12 - camX) * zoom + halfW;
+      const sy = (-12 - camY) * zoom + halfH;
+      const sw = 24 * zoom;
+      const sh = 24 * zoom;
       ctx.setLineDash([8, 8]);
       ctx.strokeRect(sx, sy, sw, sh);
       ctx.restore();
@@ -244,7 +341,9 @@ export function GameCanvas() {
               local.bounceTimer > 0
                 ? Math.sin(
                     (1 - local.bounceTimer / BOUNCE_DURATION) * Math.PI,
-                  ) * BOUNCE_HEIGHT_PX
+                  ) *
+                  BOUNCE_HEIGHT_PX *
+                  tileScale
                 : 0,
             anim: local.anim,
             petId: snap.petId,
@@ -263,7 +362,8 @@ export function GameCanvas() {
             bounceY:
               snap.anim === "jump"
                 ? Math.sin(((performance.now() % 600) / 600) * Math.PI) *
-                  BOUNCE_HEIGHT_PX
+                  BOUNCE_HEIGHT_PX *
+                  tileScale
                 : 0,
             anim: snap.anim,
             petId: snap.petId,
@@ -284,10 +384,14 @@ export function GameCanvas() {
       // of the world. Threshold 480 px matches the @media breakpoint in CSS.
       const petScaleMul = width < 480 ? 0.65 : 1;
 
+      // Sprites scale with the same tileScale so the world feels uniform —
+      // grass tile, spawn-area outline, and pets all grow/shrink together.
+      const spriteScaleMul = petScaleMul * tileScale;
+
       for (const d of drawables) {
-        const screenX = (d.worldX - camX) * WORLD_SCALE + halfW;
-        const screenY = (d.worldY - camY) * WORLD_SCALE + halfH;
-        drawPet(ctx, d, screenX, screenY, remoteRender, petScaleMul);
+        const screenX = (d.worldX - camX) * zoom + halfW;
+        const screenY = (d.worldY - camY) * zoom + halfH;
+        drawPet(ctx, d, screenX, screenY, remoteRender, spriteScaleMul);
       }
     };
 
@@ -594,9 +698,16 @@ export function GameCanvas() {
         local.pendingJumpToSend = false;
       }
 
-      // Camera follows the local player.
-      const camX = local.x;
-      const camY = local.y;
+      // Camera follows the local player, with a drag-applied offset on top.
+      // Ease the offset back to 0 while the player is moving and no drag is
+      // active — standing still preserves the panned view, walking re-centers.
+      if (pointers.size === 0 && local.isMoving) {
+        const k = 1 - Math.exp(-CAMERA_RECENTER_RATE * dt);
+        dragOffsetX += -dragOffsetX * k;
+        dragOffsetY += -dragOffsetY * k;
+      }
+      const camX = local.x + dragOffsetX;
+      const camY = local.y + dragOffsetY;
 
       // Render with the device pixel ratio applied.
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -613,6 +724,10 @@ export function GameCanvas() {
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
     };
   }, []);
 
